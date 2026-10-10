@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0e1116" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="referrer" content="no-referrer" />
+<title>TV graph</title>
+<style>
+  :root { --bg:#0e1116; --card:#171c24; --line:#2a3240; --text:#e8edf4; --muted:#8b97a8; --accent:#7ee0c6; --warn:#e7c36a; --bad:#e07a7a; --good:#8fd18a; --chip:#222a36; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui, sans-serif; }
+  header { position:sticky; top:0; z-index:2; background:rgba(14,17,22,.94); backdrop-filter:blur(8px); padding:14px 16px 8px; border-bottom:1px solid var(--line); }
+  h1 { font-size:20px; margin:0; }
+  .head { display:flex; justify-content:space-between; gap:10px; align-items:center; }
+  .head-actions { display:flex; gap:6px; align-items:center; }
+  .sub { color:var(--muted); font-size:13px; margin:8px 0 10px; }
+  nav { display:flex; gap:6px; overflow:auto; }
+  nav button, #openSettings, .tools button, .row button, .filters button { border:1px solid var(--line); background:var(--chip); color:var(--text); border-radius:999px; padding:8px 12px; font:inherit; font-size:14px; }
+  #openSettings { min-height:44px; }
+  nav button.on { background:var(--accent); color:#10221c; border-color:transparent; font-weight:650; }
+  main { padding:12px 14px calc(88px + env(safe-area-inset-bottom)); max-width:720px; margin:0 auto; }
+  .filters { display:flex; gap:6px; overflow:auto; padding:10px 0 4px; }
+  .filters button.on { border-color:var(--accent); color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; margin:10px 0; }
+  .top { display:flex; justify-content:space-between; gap:10px; align-items:baseline; }
+  .title { font-size:17px; font-weight:650; }
+  a.imdb { color:var(--warn); font-variant-numeric:tabular-nums; font-size:14px; text-decoration:none; }
+  .meta, .why { color:var(--muted); font-size:13px; margin:6px 0 0; }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .badge { font-size:12px; padding:3px 8px; border-radius:999px; background:#243041; color:#c5d0de; }
+  .badge.full { background:#3a2a22; color:#e7c36a; }
+  .badge.hw { background:#2a2438; color:#c7b6e8; }
+  .badge.status { border:0; font:inherit; font-size:12px; font-weight:650; }
+  .badge.synced { background:#1c3a2e; color:var(--good); }
+  .badge.saving { background:#3a2a22; color:var(--warn); }
+  .badge.offline { background:#243041; color:var(--muted); }
+  .badge.error, .badge.setup { background:#3a2222; color:var(--bad); }
+  .row { display:flex; gap:8px; margin-top:12px; }
+  .row button { flex:1; min-height:44px; border-radius:12px; }
+  .row .go { background:var(--accent); color:#10221c; border-color:transparent; font-weight:700; }
+  .row .no { color:var(--bad); }
+  .search, .add input, textarea, .sheet input { width:100%; background:#12171e; color:var(--text); border:1px solid var(--line); border-radius:12px; padding:12px; font:inherit; margin-top:8px; }
+  .tools { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .note, .date { font-size:13px; color:var(--muted); }
+  .verdict { font-size:13px; color:var(--good); }
+  dialog { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:16px; width:min(520px, 92vw); max-height:88vh; overflow:auto; padding:16px 16px calc(16px + env(safe-area-inset-bottom)); }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  .sheet label { display:block; margin-top:10px; }
+  details { margin-top:16px; }
+  summary { cursor:pointer; color:var(--muted); min-height:44px; display:flex; align-items:center; }
+  .empty { color:var(--muted); padding:24px 4px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="head">
+    <h1>TV graph</h1>
+    <div class="head-actions">
+      <button type="button" id="chip" class="badge status setup" aria-live="polite">Setup</button>
+      <button type="button" id="openSettings">Settings</button>
+    </div>
+  </div>
+  <p class="sub">Tap. Date stamps. Score opens IMDb. Near is soon. Long is parked.</p>
+  <p class="sub" id="statusDetail" hidden></p>
+  <nav>
+    <button data-tab="near" class="on">Near</button>
+    <button data-tab="long">Long</button>
+    <button data-tab="watched">Watched</button>
+    <button data-tab="dnf">Not for me</button>
+  </nav>
+  <input class="search" id="q" placeholder="Search title or lane" autocomplete="off" />
+  <div class="filters" id="filters"></div>
+</header>
+<main id="list"></main>
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlgTitle" style="margin:0 0 8px"></h3>
+    <label class="note">Watched date</label>
+    <input type="date" id="dlgDate" />
+    <label class="note">Verdict</label>
+    <div class="row" id="verdicts"></div>
+    <textarea id="dlgNote" rows="3" placeholder="Optional note"></textarea>
+    <div class="row"><button value="cancel">Cancel</button><button class="go" value="ok">Save</button></div>
+  </form>
+</dialog>
+<dialog id="settings">
+  <form id="settingsForm" class="sheet" autocomplete="off">
+    <h3 style="margin:0 0 8px">Settings</h3>
+    <p class="note">Paste a fine-grained token for one repo you choose. It stays in this browser only. It can edit that repo, so revoke it on GitHub if the phone is lost.</p>
+    <label class="note" for="setToken">Token</label>
+    <input id="setToken" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+    <label class="note" for="setOwner">Owner</label>
+    <input id="setOwner" autocomplete="off" autocapitalize="off" spellcheck="false" />
+    <label class="note" for="setRepo">Repo</label>
+    <input id="setRepo" autocomplete="off" autocapitalize="off" spellcheck="false" />
+    <label class="note" for="setPath">Path</label>
+    <input id="setPath" value="tv-graph.json" autocomplete="off" spellcheck="false" />
+    <label class="note" for="setBranch">Branch</label>
+    <input id="setBranch" value="main" autocomplete="off" spellcheck="false" />
+    <p class="note" id="settingsError"></p>
+    <div class="row"><button type="button" id="settingsClose">Close</button><button class="go" type="submit">Save</button></div>
+    <details>
+      <summary>Backup file</summary>
+      <p class="note">Save downloads tv-graph.json. Import reads a file from this phone. The token is not in that file.</p>
+      <div class="tools">
+        <button id="exportBtn" type="button">Save</button>
+        <button id="importBtn" type="button">Import</button>
+      </div>
+      <input id="file" type="file" accept="application/json,.json" hidden />
+    </details>
+  </form>
+</dialog>
+<script src="tv-sync.js"></script>
+<script>
+const LANES = ["all","fringe","spy","space","quirk","crime","fight","flag"];
+let doc = { shows: [] };
+let tab = "near";
+let lane = "all";
+let sync = null;
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, function (ch) {
+    return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch];
+  });
+}
+function shows() { return doc.shows || []; }
+function browserStorage() {
+  return {
+    getItem: function (key) {
+      try { return localStorage.getItem(key); } catch (e) { return null; }
+    },
+    setItem: function (key, value) { localStorage.setItem(key, value); }
+  };
+}
+function paintStatus(view) {
+  const chip = document.getElementById("chip");
+  chip.textContent = view.status || "Error";
+  chip.className = "badge status " + String(view.status || "error").toLowerCase();
+  const detail = document.getElementById("statusDetail");
+  const text = view.errorDetail || "";
+  const show = (view.status === "Error" || view.status === "Offline" || view.status === "Setup") && text;
+  detail.hidden = !show;
+  detail.textContent = show ? text : "";
+  const settingsError = document.getElementById("settingsError");
+  if (settingsError) settingsError.textContent = view.status === "Error" ? text : "";
+}
+function likedLanes() {
+  const score = {};
+  shows().filter(function (s) { return s.status === "watched" && !["trash","dnf","ok"].includes(s.verdict); }).forEach(function (s) {
+    score[s.lane] = (score[s.lane] || 0) + (s.verdict === "fantastic" || s.verdict === "great" ? 2 : 1);
+  });
+  return score;
+}
+function imdbScore(s) {
+  if (typeof s.imdb === "number" && Number.isFinite(s.imdb)) return s.imdb;
+  if (typeof s.imdb === "string" && /^\d+(\.\d+)?$/.test(s.imdb)) return Number(s.imdb);
+  return 0;
+}
+function rank(s) {
+  const lanes = likedLanes();
+  let n = imdbScore(s) * 10 + (lanes[s.lane] || 0) * 4;
+  if (s.lane === "fight") n -= 30;
+  if (s.flag === "homework") n -= 8;
+  if (s.flag === "marriage" || s.flag === "low") n -= 40;
+  return n;
+}
+function visible() {
+  const q = (document.getElementById("q").value || "").toLowerCase();
+  return shows().filter(function (s) {
+    if (s.status !== tab) return false;
+    if (lane !== "all" && s.lane !== lane) return false;
+    if (q && !(s.title + " " + s.lane + " " + (s.why || "")).toLowerCase().includes(q)) return false;
+    return true;
+  }).sort(function (a, b) {
+    return tab === "watched" ? (b.watchedAt || "").localeCompare(a.watchedAt || "") : rank(b) - rank(a);
+  });
+}
+function el(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  return t.content.firstChild;
+}
+function renderFilters() {
+  const box = document.getElementById("filters");
+  box.innerHTML = "";
+  LANES.forEach(function (name) {
+    const b = el("<button type=\"button\">" + esc(name) + "</button>");
+    if (name === lane) b.classList.add("on");
+    b.onclick = function () { lane = name; render(); };
+    box.appendChild(b);
+  });
+}
+function imdbHref(s) {
+  if (typeof s.imdb === "string" && /^tt\d+$/.test(s.imdb)) return "https://www.imdb.com/title/" + s.imdb + "/";
+  return "https://www.imdb.com/find/?q=" + encodeURIComponent((s.title || "") + " tv series");
+}
+function imdbText(s) {
+  if (typeof s.imdb === "number") return String(s.imdb);
+  if (typeof s.imdb === "string" && /^\d+(\.\d+)?$/.test(s.imdb)) return s.imdb;
+  return "IMDb";
+}
+function render() {
+  renderFilters();
+  document.querySelectorAll("nav button").forEach(function (b) { b.classList.toggle("on", b.dataset.tab === tab); });
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  const rows = visible();
+  if (!rows.length) list.appendChild(el("<p class=\"empty\">Nothing in this tab.</p>"));
+  rows.forEach(function (s) { list.appendChild(card(s)); });
+}
+function card(s) {
+  const flag = s.flag ? "<span class=\"badge" + (s.flag === "homework" ? " hw" : "") + "\">" + esc(s.flag) + "</span>" : "";
+  const full = s.lane === "fight" ? "<span class=\"badge full\">fight lane full</span>" : "";
+  const when = s.watchedAt ? "<p class=\"date\">Watched " + esc(s.watchedAt) + "</p>" : "";
+  const verdict = s.verdict ? "<p class=\"verdict\">" + esc(s.verdict) + "</p>" : "";
+  const actions = (s.status === "near" || s.status === "long")
+    ? "<div class=\"row\"><button class=\"go\" data-act=\"watched\">Watched</button><button data-act=\"near\">Near</button><button data-act=\"long\">Long</button><button class=\"no\" data-act=\"dnf\">Not for me</button></div>"
+    : "<div class=\"row\"><button data-act=\"edit\">Edit date / note</button><button data-act=\"near\">Back to near</button></div>";
+  const node = el("<article class=\"card\">" +
+    "<div class=\"top\"><div class=\"title\">" + esc(s.title) + "</div><a class=\"imdb\" href=\"" + esc(imdbHref(s)) + "\" target=\"_blank\" rel=\"noopener\">" + esc(imdbText(s)) + "</a></div>" +
+    "<p class=\"meta\">" + esc(s.years || "") + " · " + esc(s.lane) + (s.where ? " · " + esc(s.where) : "") + "</p>" +
+    "<p class=\"why\">" + esc(s.why || "") + "</p>" +
+    verdict + when +
+    "<div class=\"badges\">" + flag + full + "<span class=\"badge\">" + esc(s.lane) + "</span></div>" +
+    actions +
+    "</article>");
+  node.querySelectorAll("button").forEach(function (b) { b.onclick = function () { act(s.id, b.dataset.act); }; });
+  return node;
+}
+function today() { return new Date().toISOString().slice(0, 10); }
+function changed(show, status) {
+  show.updatedAt = new Date().toISOString();
+  sync.markChanged(doc, TvSync.commitMessage(show.title, status));
+}
+function act(id, kind) {
+  const s = shows().find(function (x) { return x.id === id; });
+  if (!s) return;
+  if (kind === "watched") {
+    s.status = "watched";
+    if (!s.watchedAt) s.watchedAt = today();
+    if (!s.verdict) s.verdict = "liked";
+    changed(s, "watched");
+    return;
+  }
+  if (kind === "near" || kind === "long" || kind === "dnf") {
+    s.status = kind;
+    if (kind === "dnf" && !s.verdict) s.verdict = "dnf";
+    changed(s, kind);
+    return;
+  }
+  if (kind === "edit") openEdit(s);
+}
+function openEdit(s) {
+  const dlg = document.getElementById("dlg");
+  document.getElementById("dlgTitle").textContent = s.title || "";
+  document.getElementById("dlgDate").value = s.watchedAt || today();
+  document.getElementById("dlgNote").value = s.note || "";
+  const box = document.getElementById("verdicts");
+  box.innerHTML = "";
+  ["fantastic","great","liked","ok","trash","dnf"].forEach(function (v) {
+    const b = el("<button type=\"button\">" + esc(v) + "</button>");
+    if (s.verdict === v) b.classList.add("on");
+    b.onclick = function () {
+      const current = shows().find(function (x) { return x.id === s.id; });
+      if (!current) return;
+      current.verdict = v;
+      box.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
+      b.classList.add("on");
+    };
+    box.appendChild(b);
+  });
+  dlg.showModal();
+  dlg.onclose = function () {
+    if (dlg.returnValue !== "ok") return;
+    const current = shows().find(function (x) { return x.id === s.id; });
+    if (!current) return;
+    current.watchedAt = document.getElementById("dlgDate").value;
+    current.note = document.getElementById("dlgNote").value;
+    current.status = "watched";
+    changed(current, "watched");
+  };
+}
+function openSettings() {
+  if (!sync) return;
+  const saved = sync.getSettings();
+  document.getElementById("setToken").value = saved.token || "";
+  document.getElementById("setOwner").value = saved.owner || "";
+  document.getElementById("setRepo").value = saved.repo || "";
+  document.getElementById("setPath").value = saved.path || "tv-graph.json";
+  document.getElementById("setBranch").value = saved.branch || "main";
+  const dlg = document.getElementById("settings");
+  if (!dlg.open) dlg.showModal();
+}
+function downloadBackup() {
+  const blob = new Blob([JSON.stringify(sync.exportDoc(), null, 2) + "\n"], { type: "application/json" });
+  const a = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  a.href = url;
+  a.download = "tv-graph.json";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+}
+function start() {
+  sync = TvSync.createTrackerSync({
+    fetch: window.fetch.bind(window),
+    storage: browserStorage(),
+    onChange: function (view) {
+      doc = view.doc;
+      paintStatus(view);
+      render();
+    }
+  });
+  document.querySelectorAll("nav button").forEach(function (b) {
+    b.onclick = function () { tab = b.dataset.tab; render(); };
+  });
+  document.getElementById("q").oninput = function () { render(); };
+  document.getElementById("chip").onclick = openSettings;
+  document.getElementById("openSettings").onclick = openSettings;
+  document.getElementById("settingsClose").onclick = function () { document.getElementById("settings").close(); };
+  document.getElementById("settingsForm").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    await sync.saveSettings({
+      token: document.getElementById("setToken").value,
+      owner: document.getElementById("setOwner").value,
+      repo: document.getElementById("setRepo").value,
+      path: document.getElementById("setPath").value,
+      branch: document.getElementById("setBranch").value
+    });
+    const st = sync.getStatus();
+    if (st.configured && st.status !== "Error") document.getElementById("settings").close();
+  });
+  document.getElementById("exportBtn").onclick = downloadBackup;
+  document.getElementById("importBtn").onclick = function () { document.getElementById("file").click(); };
+  document.getElementById("file").onchange = async function (event) {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      sync.importDoc(await file.text());
+    } catch (e) {
+      paintStatus({ status: "Error", errorDetail: (e && e.message) || "Import failed. Nothing was changed.", configured: true });
+    }
+  };
+  window.addEventListener("online", function () { sync.retryIfDirty(); });
+  window.addEventListener("offline", function () { sync.noteOffline(); });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") sync.retryIfDirty();
+  });
+  sync.boot().then(function () {
+    if (!sync.getStatus().configured) openSettings();
+  });
+}
+if (!window.TvSync) {
+  document.getElementById("chip").textContent = "Error";
+  document.getElementById("chip").className = "badge status error";
+  document.getElementById("statusDetail").hidden = false;
+  document.getElementById("statusDetail").textContent = "tv-sync.js did not load. Keep it in the same folder as this page.";
+} else {
+  start();
+}
+</script>
+</body>
+</html>
