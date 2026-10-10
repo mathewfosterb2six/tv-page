@@ -19,6 +19,9 @@
   nav { display:flex; gap:6px; overflow:auto; }
   nav button, #openSettings, .tools button, .row button, .filters button { border:1px solid var(--line); background:var(--chip); color:var(--text); border-radius:999px; padding:8px 12px; font:inherit; font-size:14px; min-height:44px; min-width:44px; touch-action:manipulation; }
   nav button.on { background:var(--accent); color:#10221c; border-color:transparent; font-weight:650; }
+  nav button[data-tab="suggested"] { border-color:var(--warn); color:var(--warn); }
+  nav button[data-tab="suggested"].on { background:var(--warn); color:#241c0c; border-color:transparent; }
+  .card.suggest { border-color:#4a3d22; }
   main { padding:12px 14px calc(88px + env(safe-area-inset-bottom)); max-width:720px; margin:0 auto; }
   .filters { display:flex; gap:6px; overflow:auto; padding:10px 0 4px; }
   .filters button.on { border-color:var(--accent); color:var(--accent); }
@@ -41,6 +44,8 @@
   .row button.on { border-color:var(--accent); color:var(--accent); }
   .row .go { background:var(--accent); color:#10221c; border-color:transparent; font-weight:700; }
   .row .no { color:var(--bad); }
+  .row .dismiss { color:var(--muted); }
+  .based { color:var(--muted); font-size:13px; margin:6px 0 0; }
   .search, .add input, textarea, .sheet input { width:100%; background:#12171e; color:var(--text); border:1px solid var(--line); border-radius:12px; padding:12px; font:inherit; margin-top:8px; }
   .tools { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
   .note, .date { font-size:13px; color:var(--muted); }
@@ -62,9 +67,10 @@
       <button type="button" id="openSettings">Settings</button>
     </div>
   </div>
-  <p class="sub">Tap. Date stamps. Score opens IMDb. Near is soon. Long is parked.</p>
+  <p class="sub">Tap. Date stamps. Score opens IMDb. Near is soon. Long is parked. <span id="planned"></span></p>
   <p class="sub" id="statusDetail" hidden></p>
   <nav>
+    <button type="button" data-tab="suggested">Suggested</button>
     <button type="button" data-tab="near" class="on">Near</button>
     <button type="button" data-tab="long">Long</button>
     <button type="button" data-tab="watched">Watched</button>
@@ -125,7 +131,6 @@ function esc(value) {
     return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch];
   });
 }
-function shows() { return doc.shows || []; }
 function browserStorage() {
   return {
     getItem: function (key) {
@@ -146,36 +151,12 @@ function paintStatus(view) {
   const settingsError = document.getElementById("settingsError");
   if (settingsError) settingsError.textContent = view.status === "Error" ? text : "";
 }
-function likedLanes() {
-  const score = {};
-  shows().filter(function (s) { return s.status === "watched" && !["trash","dnf","ok"].includes(s.verdict); }).forEach(function (s) {
-    score[s.lane] = (score[s.lane] || 0) + (s.verdict === "fantastic" || s.verdict === "great" ? 2 : 1);
-  });
-  return score;
-}
-function imdbScore(s) {
-  if (typeof s.imdb === "number" && Number.isFinite(s.imdb)) return s.imdb;
-  if (typeof s.imdb === "string" && /^\d+(\.\d+)?$/.test(s.imdb)) return Number(s.imdb);
-  return 0;
-}
-function rank(s) {
-  const lanes = likedLanes();
-  let n = imdbScore(s) * 10 + (lanes[s.lane] || 0) * 4;
-  if (s.lane === "fight") n -= 30;
-  if (s.flag === "homework") n -= 8;
-  if (s.flag === "marriage" || s.flag === "low") n -= 40;
-  return n;
+function shows() {
+  return doc && Array.isArray(doc.shows) ? doc.shows : [];
 }
 function visible() {
-  const q = (document.getElementById("q").value || "").toLowerCase();
-  return shows().filter(function (s) {
-    if (s.status !== tab) return false;
-    if (lane !== "all" && s.lane !== lane) return false;
-    if (q && !(s.title + " " + s.lane + " " + (s.why || "")).toLowerCase().includes(q)) return false;
-    return true;
-  }).sort(function (a, b) {
-    return tab === "watched" ? (b.watchedAt || "").localeCompare(a.watchedAt || "") : rank(b) - rank(a);
-  });
+  const q = document.getElementById("q").value || "";
+  return TvSync.filterShows(shows(), { tab: tab, lane: lane, query: q });
 }
 function el(html) {
   const t = document.createElement("template");
@@ -192,54 +173,77 @@ function renderFilters() {
     box.appendChild(b);
   });
 }
-function imdbHref(s) { return TvSync.imdbUrl(s); }
-function imdbText(s) {
-  if (typeof s.imdb === "number") return String(s.imdb);
-  if (typeof s.imdb === "string" && /^\d+(\.\d+)?$/.test(s.imdb)) return s.imdb;
-  return "IMDb";
-}
 function render() {
   renderFilters();
   document.querySelectorAll("nav button").forEach(function (b) { b.classList.toggle("on", b.dataset.tab === tab); });
+  const planned = document.getElementById("planned");
+  if (planned) planned.textContent = TvSync.plannedCount(shows()) + " planned.";
   const list = document.getElementById("list");
   list.innerHTML = "";
-  const rows = visible();
+  let rows = [];
+  try { rows = visible(); } catch (e) { rows = []; }
   if (!rows.length) list.appendChild(el("<p class=\"empty\">Nothing in this tab.</p>"));
-  rows.forEach(function (s) { list.appendChild(card(s)); });
+  rows.forEach(function (s) {
+    let node = null;
+    try { node = card(s); } catch (e) { node = null; }
+    if (!node) node = el("<article class=\"card\"><p class=\"meta\">This title could not be shown.</p></article>");
+    list.appendChild(node);
+  });
 }
 function actionButton(label, act, opts) {
   const options = opts || {};
   const classes = [];
   if (options.go) classes.push("go");
   if (options.no) classes.push("no");
+  if (options.dismiss) classes.push("dismiss");
   if (options.on) classes.push("on");
   const cls = classes.length ? " class=\"" + classes.join(" ") + "\"" : "";
   const pressed = options.lane ? " aria-pressed=\"" + (options.on ? "true" : "false") + "\"" : "";
   return "<button type=\"button\" data-act=\"" + act + "\"" + cls + pressed + ">" + esc(label) + "</button>";
 }
-function card(s) {
-  const flag = s.flag ? "<span class=\"badge" + (s.flag === "homework" ? " hw" : "") + "\">" + esc(s.flag) + "</span>" : "";
-  const full = s.lane === "fight" ? "<span class=\"badge full\">fight lane full</span>" : "";
-  const when = s.watchedAt ? "<p class=\"date\">Watched " + esc(s.watchedAt) + "</p>" : "";
-  const verdict = s.verdict ? "<p class=\"verdict\">" + esc(s.verdict) + "</p>" : "";
-  const actions = (s.status === "near" || s.status === "long")
-    ? "<div class=\"row\">" +
-        actionButton("Watched", "watched", { go: true }) +
-        actionButton("Near", "near", { lane: true, on: s.status === "near" }) +
-        actionButton("Long", "long", { lane: true, on: s.status === "long" }) +
-        actionButton("Not for me", "dnf", { no: true, lane: true, on: s.status === "dnf" }) +
-      "</div>"
-    : "<div class=\"row\">" +
-        actionButton("Edit date / note", "edit") +
-        actionButton("Back to near", "near", { lane: true, on: false }) +
+function actionsFor(status) {
+  if (status === "suggested") {
+    return "<div class=\"row\">" +
+      actionButton("Near", "near") +
+      actionButton("Long", "long") +
+      actionButton("Watched", "watched", { go: true }) +
+      actionButton("Not for me", "dnf", { no: true }) +
+      actionButton("Dismiss", "dismiss", { dismiss: true }) +
       "</div>";
-  return el("<article class=\"card\" data-id=\"" + esc(s.id) + "\">" +
-    "<div class=\"top\"><div class=\"title\">" + esc(s.title) + "</div><a class=\"imdb\" href=\"" + esc(imdbHref(s)) + "\" target=\"_blank\" rel=\"noopener\">" + esc(imdbText(s)) + "</a></div>" +
-    "<p class=\"meta\">" + esc(s.years || "") + " · " + esc(s.lane) + (s.where ? " · " + esc(s.where) : "") + "</p>" +
-    "<p class=\"why\">" + esc(s.why || "") + "</p>" +
+  }
+  if (status === "near" || status === "long") {
+    return "<div class=\"row\">" +
+      actionButton("Watched", "watched", { go: true }) +
+      actionButton("Near", "near", { lane: true, on: status === "near" }) +
+      actionButton("Long", "long", { lane: true, on: status === "long" }) +
+      actionButton("Not for me", "dnf", { no: true, lane: true, on: false }) +
+      "</div>";
+  }
+  if (status === "watched" || status === "dnf" || status === "dismissed") {
+    return "<div class=\"row\">" +
+      actionButton("Edit date / note", "edit") +
+      actionButton("Back to near", "near", { lane: true, on: false }) +
+      "</div>";
+  }
+  return "";
+}
+function card(s) {
+  const f = TvSync.cardFields(s);
+  const flag = f.flag ? "<span class=\"badge" + (f.flag === "homework" ? " hw" : "") + "\">" + esc(f.flag) + "</span>" : "";
+  const full = f.lane === "fight" ? "<span class=\"badge full\">fight lane full</span>" : "";
+  const when = f.watchedAt ? "<p class=\"date\">Watched " + esc(f.watchedAt) + "</p>" : "";
+  const verdict = f.verdict ? "<p class=\"verdict\">" + esc(f.verdict) + "</p>" : "";
+  const because = f.basedOn ? "<p class=\"based\">Based on " + esc(f.basedOn) + "</p>" : "";
+  const laneBadge = f.lane ? "<span class=\"badge\">" + esc(f.lane) + "</span>" : "";
+  const suggestClass = f.status === "suggested" ? " suggest" : "";
+  return el("<article class=\"card" + suggestClass + "\" data-id=\"" + esc(f.id) + "\">" +
+    "<div class=\"top\"><div class=\"title\">" + esc(f.title) + "</div><a class=\"imdb\" href=\"" + esc(f.imdbHref) + "\" target=\"_blank\" rel=\"noopener\">" + esc(f.imdbLabel) + "</a></div>" +
+    "<p class=\"meta\">" + esc(f.years) + " · " + esc(f.lane) + (f.where ? " · " + esc(f.where) : "") + "</p>" +
+    "<p class=\"why\">" + esc(f.why) + "</p>" +
+    because +
     verdict + when +
-    "<div class=\"badges\">" + flag + full + "<span class=\"badge\">" + esc(s.lane) + "</span></div>" +
-    actions +
+    "<div class=\"badges\">" + flag + full + laneBadge + "</div>" +
+    actionsFor(f.status) +
     "</article>");
 }
 function today() { return TvSync.localDate(new Date()); }
@@ -248,15 +252,18 @@ function changed(show, status) {
   sync.markChanged(doc, TvSync.commitMessage(show.title, status));
 }
 function act(id, kind) {
-  const s = shows().find(function (x) { return x.id === id; });
+  const s = shows().find(function (x) { return x && String(x.id) === String(id); });
   if (!s || !kind) return;
   if (kind === "edit") {
     openEdit(s);
     return;
   }
+  if (kind !== "near" && kind !== "long" && kind !== "watched" && kind !== "dnf" && kind !== "dismiss") return;
   if ((kind === "near" || kind === "long" || kind === "dnf") && s.status === kind) return;
+  const fromSuggested = s.status === "suggested";
   Object.assign(s, TvSync.applyStatus(s, kind, today()));
-  changed(s, kind);
+  changed(s, kind === "dismiss" ? s.status : kind);
+  if (kind === "watched" && fromSuggested) openEdit(s);
 }
 function openEdit(s) {
   const dlg = document.getElementById("dlg");
@@ -269,7 +276,7 @@ function openEdit(s) {
     const b = el("<button type=\"button\">" + esc(v) + "</button>");
     if (s.verdict === v) b.classList.add("on");
     b.onclick = function () {
-      const current = shows().find(function (x) { return x.id === s.id; });
+      const current = shows().find(function (x) { return x && String(x.id) === String(s.id); });
       if (!current) return;
       current.verdict = v;
       box.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
@@ -280,7 +287,7 @@ function openEdit(s) {
   dlg.showModal();
   dlg.onclose = function () {
     if (dlg.returnValue !== "ok") return;
-    const current = shows().find(function (x) { return x.id === s.id; });
+    const current = shows().find(function (x) { return x && String(x.id) === String(s.id); });
     if (!current) return;
     current.watchedAt = document.getElementById("dlgDate").value;
     current.note = document.getElementById("dlgNote").value;
