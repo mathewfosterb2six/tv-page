@@ -34,6 +34,46 @@
     return "";
   }
 
+  var NOT_FOR_ME_STATUS = "dnf";
+
+  function showStatus(show) {
+    if (!show || typeof show !== "object") return "";
+    return typeof show.status === "string" ? show.status : "";
+  }
+
+  function textField(value) {
+    return typeof value === "string" ? value : "";
+  }
+
+  function designatedStatus(status) {
+    return status === "near" || status === "long" || status === "watched" || status === "dnf" || status === "dismissed";
+  }
+
+  function dismissStatus() {
+    return NOT_FOR_ME_STATUS ? NOT_FOR_ME_STATUS : "dismissed";
+  }
+
+  function isPlannedStatus(status) {
+    return status === "near" || status === "long";
+  }
+
+  function plannedCount(list) {
+    var shows = Array.isArray(list) ? list : [];
+    var count = 0;
+    shows.forEach(function (show) {
+      if (show && isPlannedStatus(showStatus(show))) count += 1;
+    });
+    return count;
+  }
+
+  function pickShow(local, remote) {
+    var localStatus = showStatus(local);
+    var remoteStatus = showStatus(remote);
+    if (localStatus === "suggested" && designatedStatus(remoteStatus)) return remote;
+    if (remoteStatus === "suggested" && designatedStatus(localStatus)) return local;
+    return itemTime(local) >= itemTime(remote) ? local : remote;
+  }
+
   function mergeShows(localShows, remoteShows) {
     var localList = Array.isArray(localShows) ? localShows : [];
     var remoteList = Array.isArray(remoteShows) ? remoteShows : [];
@@ -56,7 +96,7 @@
         out.push(clone(remote));
         return;
       }
-      out.push(clone(itemTime(local) >= itemTime(remote) ? local : remote));
+      out.push(clone(pickShow(local, remote)));
     });
     localList.forEach(function (local) {
       if (!local) return;
@@ -640,12 +680,114 @@
     return bag.year + "-" + bag.month + "-" + bag.day;
   }
 
+  function imdbLabel(show) {
+    var src = show && typeof show === "object" ? show : {};
+    if (typeof src.imdb === "number" && Number.isFinite(src.imdb)) return String(src.imdb);
+    if (typeof src.imdb === "string" && /^\d+(\.\d+)?$/.test(src.imdb)) return src.imdb;
+    return "IMDb";
+  }
+
+  function imdbScore(show) {
+    if (!show || typeof show !== "object") return 0;
+    if (typeof show.imdb === "number" && Number.isFinite(show.imdb)) return show.imdb;
+    if (typeof show.imdb === "string" && /^\d+(\.\d+)?$/.test(show.imdb)) return Number(show.imdb);
+    return 0;
+  }
+
+  function likedLaneScores(list) {
+    var score = {};
+    var shows = Array.isArray(list) ? list : [];
+    shows.forEach(function (show) {
+      if (!show || typeof show !== "object") return;
+      if (show.status !== "watched") return;
+      var verdict = show.verdict;
+      if (verdict === "trash" || verdict === "dnf" || verdict === "ok") return;
+      var bump = verdict === "fantastic" || verdict === "great" ? 2 : 1;
+      score[show.lane] = (score[show.lane] || 0) + bump;
+    });
+    return score;
+  }
+
+  function showRank(show, scores) {
+    var lanes = scores || {};
+    var lane = show ? show.lane : undefined;
+    var flag = show ? show.flag : undefined;
+    var n = imdbScore(show) * 10 + (lanes[lane] || 0) * 4;
+    if (lane === "fight") n -= 30;
+    if (flag === "homework") n -= 8;
+    if (flag === "marriage" || flag === "low") n -= 40;
+    return n;
+  }
+
+  function matchesTab(show, tab) {
+    var status = showStatus(show);
+    if (tab === "dnf") return status === "dnf" || status === "dismissed";
+    return status === tab;
+  }
+
+  function searchHay(show) {
+    return [
+      textField(show && show.title),
+      textField(show && show.lane),
+      textField(show && show.why),
+      textField(show && show.basedOn)
+    ].join(" ").toLowerCase();
+  }
+
+  function filterShows(list, options) {
+    var opts = options || {};
+    var tab = typeof opts.tab === "string" ? opts.tab : "";
+    var lane = typeof opts.lane === "string" && opts.lane ? opts.lane : "all";
+    var query = typeof opts.query === "string" ? opts.query.toLowerCase() : "";
+    var source = Array.isArray(list) ? list : [];
+    var scores = likedLaneScores(source);
+    var rows = [];
+    source.forEach(function (show) {
+      if (!show || typeof show !== "object") return;
+      if (!matchesTab(show, tab)) return;
+      if (lane !== "all" && textField(show.lane) !== lane) return;
+      if (query && searchHay(show).indexOf(query) === -1) return;
+      rows.push(show);
+    });
+    rows.sort(function (a, b) {
+      if (tab === "watched") return textField(b.watchedAt).localeCompare(textField(a.watchedAt));
+      return showRank(b, scores) - showRank(a, scores);
+    });
+    return rows;
+  }
+
+  function cardFields(show) {
+    var src = show && typeof show === "object" ? show : {};
+    var status = showStatus(src);
+    return {
+      id: src.id == null ? "" : String(src.id),
+      title: textField(src.title),
+      years: textField(src.years),
+      lane: textField(src.lane),
+      why: textField(src.why),
+      where: textField(src.where),
+      flag: textField(src.flag),
+      basedOn: textField(src.basedOn).trim(),
+      status: status,
+      known: status === "suggested" || designatedStatus(status),
+      imdbHref: imdbUrl(src),
+      imdbLabel: imdbLabel(src),
+      watchedAt: textField(src.watchedAt),
+      verdict: textField(src.verdict)
+    };
+  }
+
   function applyStatus(show, kind, day) {
     var next = Object.assign({}, show || {});
     if (kind === "watched") {
       next.status = "watched";
       if (!next.watchedAt) next.watchedAt = day || "";
       if (!next.verdict) next.verdict = "liked";
+      return next;
+    }
+    if (kind === "dismiss") {
+      next.status = dismissStatus();
+      if (next.status === "dnf" && !next.verdict) next.verdict = "dnf";
       return next;
     }
     if (kind === "near" || kind === "long" || kind === "dnf") {
@@ -685,6 +827,10 @@
     createTrackerSync: createTrackerSync,
     imdbUrl: imdbUrl,
     localDate: localDate,
-    applyStatus: applyStatus
+    applyStatus: applyStatus,
+    dismissStatus: dismissStatus,
+    plannedCount: plannedCount,
+    filterShows: filterShows,
+    cardFields: cardFields
   };
 });
