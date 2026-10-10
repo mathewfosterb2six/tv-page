@@ -17,8 +17,7 @@
   .head-actions { display:flex; gap:6px; align-items:center; }
   .sub { color:var(--muted); font-size:13px; margin:8px 0 10px; }
   nav { display:flex; gap:6px; overflow:auto; }
-  nav button, #openSettings, .tools button, .row button, .filters button { border:1px solid var(--line); background:var(--chip); color:var(--text); border-radius:999px; padding:8px 12px; font:inherit; font-size:14px; }
-  #openSettings { min-height:44px; }
+  nav button, #openSettings, .tools button, .row button, .filters button { border:1px solid var(--line); background:var(--chip); color:var(--text); border-radius:999px; padding:8px 12px; font:inherit; font-size:14px; min-height:44px; min-width:44px; touch-action:manipulation; }
   nav button.on { background:var(--accent); color:#10221c; border-color:transparent; font-weight:650; }
   main { padding:12px 14px calc(88px + env(safe-area-inset-bottom)); max-width:720px; margin:0 auto; }
   .filters { display:flex; gap:6px; overflow:auto; padding:10px 0 4px; }
@@ -37,8 +36,9 @@
   .badge.saving { background:#3a2a22; color:var(--warn); }
   .badge.offline { background:#243041; color:var(--muted); }
   .badge.error, .badge.setup { background:#3a2222; color:var(--bad); }
-  .row { display:flex; gap:8px; margin-top:12px; }
-  .row button { flex:1; min-height:44px; border-radius:12px; }
+  .row { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .row button { flex:1 1 8rem; min-height:44px; border-radius:12px; }
+  .row button.on { border-color:var(--accent); color:var(--accent); }
   .row .go { background:var(--accent); color:#10221c; border-color:transparent; font-weight:700; }
   .row .no { color:var(--bad); }
   .search, .add input, textarea, .sheet input { width:100%; background:#12171e; color:var(--text); border:1px solid var(--line); border-radius:12px; padding:12px; font:inherit; margin-top:8px; }
@@ -65,10 +65,10 @@
   <p class="sub">Tap. Date stamps. Score opens IMDb. Near is soon. Long is parked.</p>
   <p class="sub" id="statusDetail" hidden></p>
   <nav>
-    <button data-tab="near" class="on">Near</button>
-    <button data-tab="long">Long</button>
-    <button data-tab="watched">Watched</button>
-    <button data-tab="dnf">Not for me</button>
+    <button type="button" data-tab="near" class="on">Near</button>
+    <button type="button" data-tab="long">Long</button>
+    <button type="button" data-tab="watched">Watched</button>
+    <button type="button" data-tab="dnf">Not for me</button>
   </nav>
   <input class="search" id="q" placeholder="Search title or lane" autocomplete="off" />
   <div class="filters" id="filters"></div>
@@ -192,10 +192,7 @@ function renderFilters() {
     box.appendChild(b);
   });
 }
-function imdbHref(s) {
-  if (typeof s.imdb === "string" && /^tt\d+$/.test(s.imdb)) return "https://www.imdb.com/title/" + s.imdb + "/";
-  return "https://www.imdb.com/find/?q=" + encodeURIComponent((s.title || "") + " tv series");
-}
+function imdbHref(s) { return TvSync.imdbUrl(s); }
 function imdbText(s) {
   if (typeof s.imdb === "number") return String(s.imdb);
   if (typeof s.imdb === "string" && /^\d+(\.\d+)?$/.test(s.imdb)) return s.imdb;
@@ -210,15 +207,33 @@ function render() {
   if (!rows.length) list.appendChild(el("<p class=\"empty\">Nothing in this tab.</p>"));
   rows.forEach(function (s) { list.appendChild(card(s)); });
 }
+function actionButton(label, act, opts) {
+  const options = opts || {};
+  const classes = [];
+  if (options.go) classes.push("go");
+  if (options.no) classes.push("no");
+  if (options.on) classes.push("on");
+  const cls = classes.length ? " class=\"" + classes.join(" ") + "\"" : "";
+  const pressed = options.lane ? " aria-pressed=\"" + (options.on ? "true" : "false") + "\"" : "";
+  return "<button type=\"button\" data-act=\"" + act + "\"" + cls + pressed + ">" + esc(label) + "</button>";
+}
 function card(s) {
   const flag = s.flag ? "<span class=\"badge" + (s.flag === "homework" ? " hw" : "") + "\">" + esc(s.flag) + "</span>" : "";
   const full = s.lane === "fight" ? "<span class=\"badge full\">fight lane full</span>" : "";
   const when = s.watchedAt ? "<p class=\"date\">Watched " + esc(s.watchedAt) + "</p>" : "";
   const verdict = s.verdict ? "<p class=\"verdict\">" + esc(s.verdict) + "</p>" : "";
   const actions = (s.status === "near" || s.status === "long")
-    ? "<div class=\"row\"><button class=\"go\" data-act=\"watched\">Watched</button><button data-act=\"near\">Near</button><button data-act=\"long\">Long</button><button class=\"no\" data-act=\"dnf\">Not for me</button></div>"
-    : "<div class=\"row\"><button data-act=\"edit\">Edit date / note</button><button data-act=\"near\">Back to near</button></div>";
-  const node = el("<article class=\"card\">" +
+    ? "<div class=\"row\">" +
+        actionButton("Watched", "watched", { go: true }) +
+        actionButton("Near", "near", { lane: true, on: s.status === "near" }) +
+        actionButton("Long", "long", { lane: true, on: s.status === "long" }) +
+        actionButton("Not for me", "dnf", { no: true, lane: true, on: s.status === "dnf" }) +
+      "</div>"
+    : "<div class=\"row\">" +
+        actionButton("Edit date / note", "edit") +
+        actionButton("Back to near", "near", { lane: true, on: false }) +
+      "</div>";
+  return el("<article class=\"card\" data-id=\"" + esc(s.id) + "\">" +
     "<div class=\"top\"><div class=\"title\">" + esc(s.title) + "</div><a class=\"imdb\" href=\"" + esc(imdbHref(s)) + "\" target=\"_blank\" rel=\"noopener\">" + esc(imdbText(s)) + "</a></div>" +
     "<p class=\"meta\">" + esc(s.years || "") + " · " + esc(s.lane) + (s.where ? " · " + esc(s.where) : "") + "</p>" +
     "<p class=\"why\">" + esc(s.why || "") + "</p>" +
@@ -226,31 +241,22 @@ function card(s) {
     "<div class=\"badges\">" + flag + full + "<span class=\"badge\">" + esc(s.lane) + "</span></div>" +
     actions +
     "</article>");
-  node.querySelectorAll("button").forEach(function (b) { b.onclick = function () { act(s.id, b.dataset.act); }; });
-  return node;
 }
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return TvSync.localDate(new Date()); }
 function changed(show, status) {
   show.updatedAt = new Date().toISOString();
   sync.markChanged(doc, TvSync.commitMessage(show.title, status));
 }
 function act(id, kind) {
   const s = shows().find(function (x) { return x.id === id; });
-  if (!s) return;
-  if (kind === "watched") {
-    s.status = "watched";
-    if (!s.watchedAt) s.watchedAt = today();
-    if (!s.verdict) s.verdict = "liked";
-    changed(s, "watched");
+  if (!s || !kind) return;
+  if (kind === "edit") {
+    openEdit(s);
     return;
   }
-  if (kind === "near" || kind === "long" || kind === "dnf") {
-    s.status = kind;
-    if (kind === "dnf" && !s.verdict) s.verdict = "dnf";
-    changed(s, kind);
-    return;
-  }
-  if (kind === "edit") openEdit(s);
+  if ((kind === "near" || kind === "long" || kind === "dnf") && s.status === kind) return;
+  Object.assign(s, TvSync.applyStatus(s, kind, today()));
+  changed(s, kind);
 }
 function openEdit(s) {
   const dlg = document.getElementById("dlg");
@@ -314,6 +320,13 @@ function start() {
       paintStatus(view);
       render();
     }
+  });
+  document.getElementById("list").addEventListener("click", function (event) {
+    const button = event.target.closest("button[data-act]");
+    if (!button || !event.currentTarget.contains(button)) return;
+    const card = button.closest("article[data-id]");
+    if (!card) return;
+    act(card.dataset.id, button.dataset.act);
   });
   document.querySelectorAll("nav button").forEach(function (b) {
     b.onclick = function () { tab = b.dataset.tab; render(); };
