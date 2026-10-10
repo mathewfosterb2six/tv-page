@@ -615,6 +615,47 @@
     };
   }
 
+  function imdbUrl(show) {
+    var src = show && typeof show === "object" ? show : {};
+    var id = typeof src.imdb === "string" ? src.imdb.trim() : "";
+    if (/^tt\d{7,}$/.test(id)) return "https://www.imdb.com/title/" + id + "/";
+    var title = String(src.title || "").replace(/\s+/g, " ").trim();
+    var yearMatch = String(src.years || "").match(/\d{4}/);
+    var year = yearMatch ? yearMatch[0] : "";
+    var query = title && year ? title + " " + year : (title || year);
+    return "https://www.imdb.com/find/?q=" + encodeURIComponent(query);
+  }
+
+  function localDate(date, timeZone) {
+    var value = date instanceof Date ? date : new Date(date);
+    if (Number.isNaN(value.getTime())) return "";
+    var options = { year: "numeric", month: "2-digit", day: "2-digit" };
+    if (timeZone) options.timeZone = timeZone;
+    var parts = new Intl.DateTimeFormat("en-US", options).formatToParts(value);
+    var bag = { year: "", month: "", day: "" };
+    parts.forEach(function (part) {
+      if (part.type === "year" || part.type === "month" || part.type === "day") bag[part.type] = part.value;
+    });
+    if (!bag.year || !bag.month || !bag.day) return "";
+    return bag.year + "-" + bag.month + "-" + bag.day;
+  }
+
+  function applyStatus(show, kind, day) {
+    var next = Object.assign({}, show || {});
+    if (kind === "watched") {
+      next.status = "watched";
+      if (!next.watchedAt) next.watchedAt = day || "";
+      if (!next.verdict) next.verdict = "liked";
+      return next;
+    }
+    if (kind === "near" || kind === "long" || kind === "dnf") {
+      next.status = kind;
+      if (kind === "dnf" && !next.verdict) next.verdict = "dnf";
+      return next;
+    }
+    return next;
+  }
+
   function normalizeSettings(input) {
     var src = input || {};
     var token = typeof src.token === "string" ? src.token : "";
@@ -641,6 +682,9 @@
     contentsUrls: contentsUrls,
     commitMessage: commitMessage,
     memoryStorage: memoryStorage,
-    createTrackerSync: createTrackerSync
+    createTrackerSync: createTrackerSync,
+    imdbUrl: imdbUrl,
+    localDate: localDate,
+    applyStatus: applyStatus
   };
 });
