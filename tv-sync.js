@@ -7,6 +7,10 @@
   var SETTINGS_KEY = "tv-tracker-settings-v1";
   var CACHE_KEY = "tv-tracker-cache-v1";
   var DEBOUNCE_MS = 1500;
+  var COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  var STUCK_MS = 2 * 60 * 60 * 1000;
+  var REFRESH_POLL_MS = 30000;
+  var REFRESH_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   function clone(value) {
     if (value == null) return value;
@@ -66,12 +70,16 @@
     return count;
   }
 
+  function withCarriedFields(winner, loser) {
+    return Object.assign({}, loser || {}, winner || {});
+  }
+
   function pickShow(local, remote) {
     var localStatus = showStatus(local);
     var remoteStatus = showStatus(remote);
-    if (localStatus === "suggested" && designatedStatus(remoteStatus)) return remote;
-    if (remoteStatus === "suggested" && designatedStatus(localStatus)) return local;
-    return itemTime(local) >= itemTime(remote) ? local : remote;
+    if (localStatus === "suggested" && designatedStatus(remoteStatus)) return withCarriedFields(remote, local);
+    if (remoteStatus === "suggested" && designatedStatus(localStatus)) return withCarriedFields(local, remote);
+    return itemTime(local) >= itemTime(remote) ? withCarriedFields(local, remote) : withCarriedFields(remote, local);
   }
 
   function mergeShows(localShows, remoteShows) {
@@ -109,6 +117,154 @@
     return out;
   }
 
+  function refreshOf(doc) {
+    var block = doc && doc.refresh;
+    if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+    return block;
+  }
+
+  function suggestedCount(doc) {
+    var shows = doc && Array.isArray(doc.shows) ? doc.shows : [];
+    var count = 0;
+    shows.forEach(function (show) {
+      if (show && show.status === "suggested") count += 1;
+    });
+    return count;
+  }
+
+  function parsedTime(value) {
+    if (typeof value !== "string" || !value) return NaN;
+    return Date.parse(value);
+  }
+
+  function runStamp(block) {
+    var t = parsedTime(block && block.lastRunAt);
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function isPendingRefresh(block) {
+    if (!block) return false;
+    return block.status === "requested" || block.status === "working";
+  }
+
+  function isStuckRefresh(block, nowMs) {
+    if (!isPendingRefresh(block)) return false;
+    var at = parsedTime(block.requestedAt);
+    if (!Number.isFinite(at)) return true;
+    return nowMs - at > STUCK_MS;
+  }
+
+  function cooldownElapsed(block, nowMs) {
+    if (!block) return true;
+    var at = parsedTime(block.lastRunAt);
+    if (!Number.isFinite(at)) return true;
+    return nowMs - at > COOLDOWN_MS;
+  }
+
+  function shouldAutoRequest(doc, nowMs) {
+    if (suggestedCount(doc) >= 5) return false;
+    var block = refreshOf(doc);
+    if (isPendingRefresh(block)) return false;
+    return cooldownElapsed(block, nowMs);
+  }
+
+  function canManualRefresh(doc, nowMs) {
+    var block = refreshOf(doc);
+    if (!isPendingRefresh(block)) return true;
+    return isStuckRefresh(block, nowMs);
+  }
+
+  function requestRefresh(doc, nowIso) {
+    var next = clone(stripSecrets(doc || emptyDoc()));
+    var prev = refreshOf(next) || {};
+    next.refresh = Object.assign({}, prev, {
+      status: "requested",
+      requestedAt: typeof nowIso === "string" ? nowIso : "",
+      requestedBy: "page"
+    });
+    return next;
+  }
+
+  function tieBreakRefresh(local, remote) {
+    if (local.status === "working" && remote.status === "requested") return local;
+    if (remote.status === "working" && local.status === "requested") return remote;
+    if (local.status === "requested" && remote.status !== "requested") return local;
+    if (remote.status === "requested" && local.status !== "requested") return remote;
+    var localAt = parsedTime(local.requestedAt);
+    var remoteAt = parsedTime(remote.requestedAt);
+    var localOk = Number.isFinite(localAt);
+    var remoteOk = Number.isFinite(remoteAt);
+    if (localOk && remoteOk && localAt !== remoteAt) return localAt >= remoteAt ? local : remote;
+    if (localOk !== remoteOk) return localOk ? local : remote;
+    return local;
+  }
+
+  function mergeRefresh(localBlock, remoteBlock) {
+    var local = refreshOf({ refresh: localBlock });
+    var remote = refreshOf({ refresh: remoteBlock });
+    if (local) local = clone(local);
+    if (remote) remote = clone(remote);
+    if (!local) return remote;
+    if (!remote) return local;
+    var localRun = runStamp(local);
+    var remoteRun = runStamp(remote);
+    var winner;
+    var other;
+    if (localRun > remoteRun) {
+      winner = local;
+      other = remote;
+    } else if (remoteRun > localRun) {
+      winner = remote;
+      other = local;
+    } else {
+      winner = tieBreakRefresh(local, remote);
+      other = winner === local ? remote : local;
+    }
+    if (winner.status === "requested" && other.status === "working") return other;
+    return winner;
+  }
+
+  function formatRefreshTime(iso, timeZone) {
+    var value = new Date(iso);
+    if (Number.isNaN(value.getTime())) return "";
+    var options = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+    if (timeZone) options.timeZone = timeZone;
+    var parts = new Intl.DateTimeFormat("en-GB", options).formatToParts(value);
+    var bag = {};
+    parts.forEach(function (part) {
+      if (part.type === "year" || part.type === "month" || part.type === "day" || part.type === "hour" || part.type === "minute") {
+        bag[part.type] = part.value;
+      }
+    });
+    if (!bag.day || !bag.month || !bag.hour || !bag.minute) return "";
+    var month = REFRESH_MONTHS[Number(bag.month) - 1] || bag.month;
+    return Number(bag.day) + " " + month + " " + bag.hour + ":" + bag.minute;
+  }
+
+  function addedCount(block) {
+    var n = block && block.lastRunAdded;
+    return typeof n === "number" && Number.isFinite(n) ? n : 0;
+  }
+
+  function refreshView(doc, nowMs) {
+    var block = refreshOf(doc);
+    var status = block ? block.status : "";
+    var stuck = isStuckRefresh(block, nowMs);
+    var chip = null;
+    if (status === "requested") chip = { kind: "requested", text: "Requested", time: "" };
+    else if (status === "working") chip = { kind: "working", text: "Working", time: "" };
+    else if (status === "done") chip = { kind: "done", text: "Done " + addedCount(block) + " new", time: formatRefreshTime(block.lastRunAt) };
+    else if (status === "failed") chip = { kind: "failed", text: "Failed", time: formatRefreshTime(block.lastRunAt || (block && block.requestedAt)) };
+    return {
+      suggestedCount: suggestedCount(doc),
+      chip: chip,
+      buttonLabel: stuck ? "Retry" : "Refresh suggestions",
+      buttonDisabled: !canManualRefresh(doc, nowMs),
+      stuck: stuck,
+      auto: shouldAutoRequest(doc, nowMs)
+    };
+  }
+
   function mergeDocs(localDoc, remoteDoc) {
     var local = stripSecrets(localDoc || emptyDoc());
     var remote = stripSecrets(remoteDoc || emptyDoc());
@@ -117,6 +273,9 @@
     var winner = pickLocal ? local : remote;
     var other = pickLocal ? remote : local;
     var base = Object.assign({}, other, winner, { shows: shows });
+    var refresh = mergeRefresh(local.refresh, remote.refresh);
+    if (refresh) base.refresh = refresh;
+    else delete base.refresh;
     delete base.token;
     delete base.authorization;
     delete base.settings;
@@ -127,7 +286,7 @@
     var clean = stripSecrets(doc || emptyDoc());
     var shows = (clean.shows || []).map(function (show) { return Object.assign({}, show); });
     shows.sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); });
-    return JSON.stringify({ note: clean.note || "", shows: shows });
+    return JSON.stringify({ note: clean.note || "", shows: shows, refresh: clean.refresh || null });
   }
 
   function bytesToB64(text) {
@@ -624,6 +783,44 @@
       if (dirty && configured() && online()) schedule(debounceMs);
     }
 
+    async function reload() {
+      if (!configured() || !online() || flushing || booting) return;
+      booting = true;
+      var seen = version;
+      try {
+        var remote = await getRemote();
+        var localChanged = version !== seen;
+        if (dirty || localChanged) {
+          doc = reconcile(stripSecrets(doc), remote.doc);
+          sha = remote.sha;
+          dirty = localChanged || material(doc) !== material(remote.doc);
+          persist();
+          if (dirty) {
+            setStatus("Saving", "");
+            schedule(debounceMs);
+          } else {
+            seenNote = doc.note || "";
+            setStatus("Synced", "");
+          }
+        } else {
+          doc = stripSecrets(remote.doc);
+          sha = remote.sha;
+          seenNote = doc.note || "";
+          dirty = false;
+          persist();
+          setStatus("Synced", "");
+        }
+      } catch (err) {
+        applyFailure(err);
+      } finally {
+        booting = false;
+        if (rerun && dirty && online() && configured()) {
+          rerun = false;
+          schedule(debounceMs);
+        }
+      }
+    }
+
     function noteOffline() {
       if (!configured()) return;
       setStatus("Offline", "Showing the copy saved on this phone.");
@@ -649,6 +846,7 @@
       exportDoc: function () { return stripSecrets(doc); },
       importDoc: importDoc,
       retryIfDirty: retryIfDirty,
+      reload: reload,
       noteOffline: noteOffline,
       getDoc: function () { return stripSecrets(doc); },
       getStatus: function () { return view(); }
@@ -813,8 +1011,19 @@
 
   return {
     DEBOUNCE_MS: DEBOUNCE_MS,
+    COOLDOWN_MS: COOLDOWN_MS,
+    STUCK_MS: STUCK_MS,
+    REFRESH_POLL_MS: REFRESH_POLL_MS,
     SETTINGS_KEY: SETTINGS_KEY,
     CACHE_KEY: CACHE_KEY,
+    suggestedCount: suggestedCount,
+    shouldAutoRequest: shouldAutoRequest,
+    canManualRefresh: canManualRefresh,
+    requestRefresh: requestRefresh,
+    mergeRefresh: mergeRefresh,
+    refreshView: refreshView,
+    formatRefreshTime: formatRefreshTime,
+    isStuckRefresh: isStuckRefresh,
     emptyDoc: emptyDoc,
     stripSecrets: stripSecrets,
     mergeShows: mergeShows,
