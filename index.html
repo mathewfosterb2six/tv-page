@@ -56,6 +56,12 @@
   details { margin-top:16px; }
   summary { cursor:pointer; color:var(--muted); min-height:44px; display:flex; align-items:center; }
   .empty { color:var(--muted); padding:24px 4px; }
+  .suggest-tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:2px 0 6px; }
+  .suggest-tools button { border:1px solid var(--line); background:var(--chip); color:var(--text); border-radius:999px; padding:8px 12px; font:inherit; font-size:14px; min-height:44px; touch-action:manipulation; }
+  .suggest-tools button:disabled { opacity:.45; }
+  .badge.refresh.requested, .badge.refresh.working { background:#3a2a22; color:var(--warn); }
+  .badge.refresh.done { background:#1c3a2e; color:var(--good); }
+  .badge.refresh.failed { background:#3a2222; color:var(--bad); }
 </style>
 </head>
 <body>
@@ -180,6 +186,7 @@ function render() {
   if (planned) planned.textContent = TvSync.plannedCount(shows()) + " planned.";
   const list = document.getElementById("list");
   list.innerHTML = "";
+  if (tab === "suggested") list.appendChild(refreshBar());
   let rows = [];
   try { rows = visible(); } catch (e) { rows = []; }
   if (!rows.length) list.appendChild(el("<p class=\"empty\">Nothing in this tab.</p>"));
@@ -245,6 +252,50 @@ function card(s) {
     "<div class=\"badges\">" + flag + full + laneBadge + "</div>" +
     actionsFor(f.status) +
     "</article>");
+}
+function refreshBar() {
+  const view = TvSync.refreshView(doc, Date.now());
+  const bar = el("<div class=\"suggest-tools\" id=\"refreshBar\"></div>");
+  const button = el("<button type=\"button\" id=\"refreshBtn\"></button>");
+  button.textContent = view.buttonLabel;
+  button.disabled = !!view.buttonDisabled;
+  if (view.stuck) button.setAttribute("aria-label", "Retry refresh");
+  button.onclick = function () { requestSuggestions(); };
+  bar.appendChild(button);
+  if (view.chip) {
+    const chip = el("<span class=\"badge refresh\" id=\"refreshChip\"></span>");
+    chip.classList.add(view.chip.kind);
+    chip.textContent = view.chip.time ? view.chip.text + " · " + view.chip.time : view.chip.text;
+    const err = doc && doc.refresh && typeof doc.refresh.error === "string" ? doc.refresh.error : "";
+    if (err) chip.title = err;
+    bar.appendChild(chip);
+  }
+  return bar;
+}
+function requestSuggestions() {
+  if (!sync || !TvSync.canManualRefresh(doc, Date.now())) return;
+  sync.markChanged(TvSync.requestRefresh(doc, new Date().toISOString()), "tv: refresh suggestions");
+}
+let booted = false;
+let refreshPoll = null;
+function considerAutoRefresh(view) {
+  if (!booted || !view || view.status !== "Synced" || view.dirty || !view.configured) return;
+  if (!TvSync.shouldAutoRequest(view.doc, Date.now())) return;
+  sync.markChanged(TvSync.requestRefresh(view.doc, new Date().toISOString()), "tv: refresh suggestions");
+}
+function armRefreshPoll(view) {
+  const status = view && view.doc && view.doc.refresh && view.doc.refresh.status;
+  const live = status === "requested" || status === "working";
+  if (live && !refreshPoll) {
+    refreshPoll = setInterval(function () {
+      if (document.visibilityState === "hidden") return;
+      if (sync) sync.reload();
+    }, TvSync.REFRESH_POLL_MS);
+  }
+  if (!live && refreshPoll) {
+    clearInterval(refreshPoll);
+    refreshPoll = null;
+  }
 }
 function today() { return TvSync.localDate(new Date()); }
 function changed(show, status) {
@@ -326,6 +377,8 @@ function start() {
       doc = view.doc;
       paintStatus(view);
       render();
+      armRefreshPoll(view);
+      considerAutoRefresh(view);
     }
   });
   document.getElementById("list").addEventListener("click", function (event) {
@@ -369,9 +422,14 @@ function start() {
   window.addEventListener("online", function () { sync.retryIfDirty(); });
   window.addEventListener("offline", function () { sync.noteOffline(); });
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible") sync.retryIfDirty();
+    if (document.visibilityState !== "visible") return;
+    sync.retryIfDirty();
+    const status = doc && doc.refresh && doc.refresh.status;
+    if (status === "requested" || status === "working") sync.reload();
   });
   sync.boot().then(function () {
+    booted = true;
+    considerAutoRefresh(sync.getStatus());
     if (!sync.getStatus().configured) openSettings();
   });
 }
