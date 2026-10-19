@@ -105,10 +105,15 @@
   #dlgChips { margin-top:8px; margin-bottom:4px; }
   #verdicts button.top { grid-column:1 / -1; }
   dialog { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:16px; width:min(520px, 92vw); max-height:88vh; overflow:auto; padding:16px 16px calc(16px + env(safe-area-inset-bottom)); }
-  #dlg { display:flex; flex-direction:column; padding:0; overflow:hidden; }
-  #dlg form { display:flex; flex-direction:column; min-height:0; max-height:88vh; }
+  /* Display is set only while open. A bare display:flex beats the browser's dialog:not([open]){display:none}, so the sheet stays on screen after Save or Cancel. */
+  #dlg[open] { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+  #dlg:not([open]) { display:none !important; }
+  #dlg form { display:flex; flex-direction:column; min-height:0; max-height:88vh; margin:0; }
   #dlg .dlg-body { overflow:auto; min-height:0; padding:16px 16px 8px; }
   #dlg .dlg-actions { flex:0 0 auto; margin-top:0; padding:8px 16px calc(12px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
+  #dlg .dlg-actions .row { margin-top:0; }
+  #dlgFeedback { margin:0 0 6px; }
+  #dlgFeedback:empty { display:none; }
   #dlg label { display:block; margin-top:10px; }
   #dlg input[type="date"] {
     width:100%; background:#12171e; color:var(--text); color-scheme:dark;
@@ -162,7 +167,7 @@
 </header>
 <main id="list"></main>
 <dialog id="dlg">
-  <form method="dialog">
+  <form id="dlgForm">
     <div class="dlg-body">
       <h3 id="dlgTitle" style="margin:0 0 8px"></h3>
       <label class="note">Watched date</label>
@@ -174,7 +179,13 @@
       <div class="chips" id="dlgChips"></div>
       <textarea id="dlgNote" rows="3" placeholder="Optional note"></textarea>
     </div>
-    <div class="row dlg-actions"><button value="cancel">Cancel</button><button class="go" value="ok">Save</button></div>
+    <div class="dlg-actions">
+      <p class="note" id="dlgFeedback" aria-live="polite"></p>
+      <div class="row">
+        <button type="button" id="dlgCancel">Cancel</button>
+        <button type="button" class="go" id="dlgSave">Save</button>
+      </div>
+    </div>
   </form>
 </dialog>
 <dialog id="settings">
@@ -384,6 +395,8 @@ function requestSuggestions() {
 }
 let booted = false;
 let refreshPoll = null;
+let dialogState = null;
+let dialogBusy = false;
 function considerAutoRefresh(view) {
   if (!booted || !view || view.status !== "Synced" || view.dirty || !view.configured) return;
   if (!TvSync.shouldAutoRequest(view.doc, Date.now())) return;
@@ -456,54 +469,108 @@ function paintTraitChips(box, selected, onPick) {
     box.appendChild(b);
   });
 }
+function resetDialogButtons() {
+  const save = document.getElementById("dlgSave");
+  const cancel = document.getElementById("dlgCancel");
+  const feedback = document.getElementById("dlgFeedback");
+  if (save) {
+    save.disabled = false;
+    save.textContent = "Save";
+  }
+  if (cancel) cancel.disabled = false;
+  if (feedback) feedback.textContent = "";
+}
+function hideDialog() {
+  const dlg = document.getElementById("dlg");
+  try {
+    if (dlg.open) dlg.close();
+  } catch (err) { /* still hide below */ }
+  if (dlg.hasAttribute("open")) dlg.removeAttribute("open");
+  dialogBusy = false;
+  dialogState = null;
+  resetDialogButtons();
+}
+function writeDialog() {
+  const state = dialogState;
+  if (!state) return;
+  const live = shows().find(function (x) { return x && String(x.id) === String(state.id); });
+  if (!live) return;
+  if (state.touched) {
+    live.verdict = state.verdict;
+    live.verdictSet = true;
+  }
+  const before = TvSync.chipList(live.chips).join("\u0000");
+  const after = TvSync.chipList(state.chips).join("\u0000");
+  if (before !== after) live.chips = TvSync.chipList(state.chips);
+  live.watchedAt = document.getElementById("dlgDate").value;
+  live.note = document.getElementById("dlgNote").value;
+  live.status = "watched";
+  if (live.dnfKind) live.dnfKind = "";
+  changed(live, live.seenBefore ? "already seen" : "watched");
+}
+function saveDialog() {
+  const dlg = document.getElementById("dlg");
+  if (dialogBusy || !dlg.open) return;
+  dialogBusy = true;
+  const save = document.getElementById("dlgSave");
+  const cancel = document.getElementById("dlgCancel");
+  if (save) {
+    save.disabled = true;
+    save.textContent = "Saved";
+  }
+  if (cancel) cancel.disabled = true;
+  const feedback = document.getElementById("dlgFeedback");
+  if (feedback) feedback.textContent = "Saved";
+  try {
+    writeDialog();
+  } catch (err) {
+    if (feedback) feedback.textContent = "Saved on this phone";
+  }
+  hideDialog();
+}
+function cancelDialog() {
+  const dlg = document.getElementById("dlg");
+  if (dialogBusy || !dlg.open) return;
+  dialogBusy = true;
+  hideDialog();
+}
 function openEdit(show) {
   const id = show && show.id;
   const current = shows().find(function (x) { return x && String(x.id) === String(id); });
   if (!current) return;
   const dlg = document.getElementById("dlg");
-  const state = {
+  if (dlg.open) return;
+  dialogBusy = false;
+  dialogState = {
+    id: id,
     verdict: current.verdict || "",
     touched: false,
     chips: TvSync.chipList(current.chips)
   };
+  resetDialogButtons();
   document.getElementById("dlgTitle").textContent = current.title || "";
   document.getElementById("dlgDate").value = current.watchedAt || today();
   document.getElementById("dlgNote").value = current.note || "";
   const verdicts = document.getElementById("verdicts");
   const chipBox = document.getElementById("dlgChips");
   function drawVerdicts() {
-    paintChoice(verdicts, TvSync.VERDICTS, state.verdict, function (id) {
-      state.verdict = id;
-      state.touched = true;
+    paintChoice(verdicts, TvSync.VERDICTS, dialogState.verdict, function (verdictId) {
+      if (!dialogState) return;
+      dialogState.verdict = verdictId;
+      dialogState.touched = true;
       drawVerdicts();
     });
   }
   function drawChips() {
-    paintTraitChips(chipBox, state.chips, function (id) {
-      state.chips = TvSync.toggleChip(state.chips, id);
+    paintTraitChips(chipBox, dialogState.chips, function (chipId) {
+      if (!dialogState) return;
+      dialogState.chips = TvSync.toggleChip(dialogState.chips, chipId);
       drawChips();
     });
   }
   drawVerdicts();
   drawChips();
   dlg.showModal();
-  dlg.onclose = function () {
-    if (dlg.returnValue !== "ok") return;
-    const live = shows().find(function (x) { return x && String(x.id) === String(id); });
-    if (!live) return;
-    if (state.touched) {
-      live.verdict = state.verdict;
-      live.verdictSet = true;
-    }
-    const before = TvSync.chipList(live.chips).join("\u0000");
-    const after = TvSync.chipList(state.chips).join("\u0000");
-    if (before !== after) live.chips = TvSync.chipList(state.chips);
-    live.watchedAt = document.getElementById("dlgDate").value;
-    live.note = document.getElementById("dlgNote").value;
-    live.status = "watched";
-    if (live.dnfKind) live.dnfKind = "";
-    changed(live, live.seenBefore ? "already seen" : "watched");
-  };
 }
 function openSettings() {
   if (!sync) return;
@@ -539,6 +606,26 @@ function start() {
       armRefreshPoll(view);
       considerAutoRefresh(view);
     }
+  });
+  const watchedDialog = document.getElementById("dlg");
+  document.getElementById("dlgForm").addEventListener("submit", function (event) {
+    event.preventDefault();
+    saveDialog();
+  });
+  document.getElementById("dlgSave").addEventListener("click", function (event) {
+    event.preventDefault();
+    saveDialog();
+  });
+  document.getElementById("dlgCancel").addEventListener("click", function (event) {
+    event.preventDefault();
+    cancelDialog();
+  });
+  watchedDialog.addEventListener("click", function (event) {
+    if (event.target === watchedDialog) cancelDialog();
+  });
+  watchedDialog.addEventListener("cancel", function (event) {
+    event.preventDefault();
+    cancelDialog();
   });
   document.getElementById("list").addEventListener("click", function (event) {
     const button = event.target.closest("button[data-act]");
