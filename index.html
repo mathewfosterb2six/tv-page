@@ -94,6 +94,16 @@
   .tools button { height:auto; min-height:var(--btn-h); white-space:normal; overflow-wrap:anywhere; max-width:100%; }
   .note, .date { font-size:13px; color:var(--muted); }
   .verdict { font-size:13px; color:var(--good); }
+  .verdict.top { color:var(--accent); font-weight:650; }
+  .verdict .default { color:var(--muted); font-weight:500; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .chips button {
+    flex:0 1 auto; width:auto; max-width:100%; height:var(--btn-h); min-height:var(--btn-h);
+    padding:8px 10px; border-radius:var(--btn-radius-pill); font-size:var(--btn-font);
+  }
+  .chips button.on { background:var(--btn-primary-bg); color:var(--btn-primary-fg); border-color:transparent; }
+  #dlgChips { margin-top:8px; margin-bottom:4px; }
+  #verdicts button.top { grid-column:1 / -1; }
   dialog { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:16px; width:min(520px, 92vw); max-height:88vh; overflow:auto; padding:16px 16px calc(16px + env(safe-area-inset-bottom)); }
   dialog::backdrop { background:rgba(0,0,0,.6); }
   .sheet label { display:block; margin-top:10px; }
@@ -124,7 +134,7 @@
       <button type="button" id="openSettings">Settings</button>
     </div>
   </div>
-  <p class="sub">Tap. Date stamps. Score opens IMDb. Near is soon. Long is parked. <span id="planned"></span></p>
+  <p class="sub">Tap. Date stamps. Score opens IMDb. Near is soon. Long is parked. Top tier is the high mark. <span id="planned"></span></p>
   <p class="sub" id="statusDetail" hidden></p>
   <div class="hscroll">
     <nav>
@@ -147,7 +157,10 @@
     <label class="note">Watched date</label>
     <input type="date" id="dlgDate" />
     <label class="note">Verdict</label>
+    <p class="note">Top tier means superior acting, story, pacing and production. Leaving the mark on liked records a default.</p>
     <div class="row" id="verdicts"></div>
+    <label class="note">Traits</label>
+    <div class="chips" id="dlgChips"></div>
     <textarea id="dlgNote" rows="3" placeholder="Optional note"></textarea>
     <div class="row"><button value="cancel">Cancel</button><button class="go" value="ok">Save</button></div>
   </form>
@@ -278,6 +291,7 @@ function actionsFor(status) {
       actionButton("Near", "near") +
       actionButton("Long", "long") +
       actionButton("Watched", "watched", { go: true }) +
+      actionButton("Already seen", "seen") +
       actionButton("Not for me", "dnf", { no: true }) +
       actionButton("Dismiss", "dismiss", { dismiss: true }) +
       "</div>";
@@ -298,12 +312,27 @@ function actionsFor(status) {
   }
   return "";
 }
+function chipBar(fields) {
+  const selected = fields.chips || [];
+  if (fields.status === "watched") {
+    return "<div class=\"chips\">" + TvSync.editorChips(selected).map(function (chip) {
+      const on = selected.indexOf(chip.id) !== -1;
+      return "<button type=\"button\" data-act=\"chip\" data-chip=\"" + esc(chip.id) + "\" aria-pressed=\"" + (on ? "true" : "false") + "\"" + (on ? " class=\"on\"" : "") + ">" + esc(chip.label) + "</button>";
+    }).join("") + "</div>";
+  }
+  if (!selected.length) return "";
+  return "<div class=\"badges\">" + selected.map(function (id) {
+    return "<span class=\"badge\">" + esc(TvSync.chipLabel(id)) + "</span>";
+  }).join("") + "</div>";
+}
 function card(s) {
   const f = TvSync.cardFields(s);
   const flag = f.flag ? "<span class=\"badge" + (f.flag === "homework" ? " hw" : "") + "\">" + esc(f.flag) + "</span>" : "";
   const full = f.lane === "fight" ? "<span class=\"badge full\">fight lane full</span>" : "";
+  const kindBadge = f.status === "dnf" && f.dnfKind === "skip" ? "<span class=\"badge\">Dismiss</span>" : (f.status === "dnf" && f.dnfKind === "no" ? "<span class=\"badge\">Not for me</span>" : "");
+  const seenBadge = f.seenBefore ? "<span class=\"badge\">Already seen</span>" : "";
   const when = f.watchedAt ? "<p class=\"date\">Watched " + esc(f.watchedAt) + "</p>" : "";
-  const verdict = f.verdict ? "<p class=\"verdict\">" + esc(f.verdict) + "</p>" : "";
+  const verdict = f.verdict ? "<p class=\"verdict" + (f.verdict === "top" ? " top" : "") + "\">" + esc(f.verdictLabel) + (f.verdictSet === false ? " <span class=\"default\">default</span>" : "") + "</p>" : "";
   const because = f.basedOn ? "<p class=\"based\">Based on " + esc(f.basedOn) + "</p>" : "";
   const laneBadge = f.lane ? "<span class=\"badge\">" + esc(f.lane) + "</span>" : "";
   const suggestClass = f.status === "suggested" ? " suggest" : "";
@@ -313,7 +342,8 @@ function card(s) {
     "<p class=\"why\">" + esc(f.why) + "</p>" +
     because +
     verdict + when +
-    "<div class=\"badges\">" + flag + full + laneBadge + "</div>" +
+    "<div class=\"badges\">" + flag + full + laneBadge + kindBadge + seenBadge + "</div>" +
+    chipBar(f) +
     actionsFor(f.status) +
     "</article>");
 }
@@ -366,48 +396,101 @@ function changed(show, status) {
   show.updatedAt = new Date().toISOString();
   sync.markChanged(doc, TvSync.commitMessage(show.title, status));
 }
-function act(id, kind) {
+function act(id, kind, chipId) {
   const s = shows().find(function (x) { return x && String(x.id) === String(id); });
   if (!s || !kind) return;
   if (kind === "edit") {
     openEdit(s);
     return;
   }
-  if (kind !== "near" && kind !== "long" && kind !== "watched" && kind !== "dnf" && kind !== "dismiss") return;
-  if ((kind === "near" || kind === "long" || kind === "dnf") && s.status === kind) return;
+  if (kind === "chip") {
+    s.chips = TvSync.toggleChip(s.chips, chipId);
+    changed(s, "chips");
+    return;
+  }
+  if (kind !== "near" && kind !== "long" && kind !== "watched" && kind !== "dnf" && kind !== "dismiss" && kind !== "seen") return;
+  if ((kind === "near" || kind === "long") && s.status === kind) return;
+  if (kind === "dnf" && s.status === "dnf" && s.dnfKind === "no") return;
+  if (kind === "dismiss" && s.status === "dnf" && s.dnfKind === "skip") return;
   const fromSuggested = s.status === "suggested";
   Object.assign(s, TvSync.applyStatus(s, kind, today()));
-  changed(s, kind === "dismiss" ? s.status : kind);
-  if (kind === "watched" && fromSuggested) openEdit(s);
+  const commitKind = kind === "seen" ? "already seen" : (kind === "dismiss" ? "dismiss" : (kind === "dnf" ? "not for me" : kind));
+  changed(s, commitKind);
+  if ((kind === "watched" || kind === "seen") && fromSuggested) openEdit(s);
 }
-function openEdit(s) {
-  const dlg = document.getElementById("dlg");
-  document.getElementById("dlgTitle").textContent = s.title || "";
-  document.getElementById("dlgDate").value = s.watchedAt || today();
-  document.getElementById("dlgNote").value = s.note || "";
-  const box = document.getElementById("verdicts");
+function paintChoice(box, items, selected, onPick) {
   box.innerHTML = "";
-  ["fantastic","great","liked","ok","trash","dnf"].forEach(function (v) {
-    const b = el("<button type=\"button\">" + esc(v) + "</button>");
-    if (s.verdict === v) b.classList.add("on");
-    b.onclick = function () {
-      const current = shows().find(function (x) { return x && String(x.id) === String(s.id); });
-      if (!current) return;
-      current.verdict = v;
-      box.querySelectorAll("button").forEach(function (x) { x.classList.remove("on"); });
-      b.classList.add("on");
+  items.forEach(function (item) {
+    const classes = [];
+    if (selected === item.id) classes.push("on");
+    if (item.id === "top") classes.push("top");
+    const b = el("<button type=\"button\"" + (classes.length ? " class=\"" + classes.join(" ") + "\"" : "") + " aria-pressed=\"" + (selected === item.id ? "true" : "false") + "\">" + esc(item.label) + "</button>");
+    b.onclick = function (event) {
+      event.preventDefault();
+      onPick(item.id);
     };
     box.appendChild(b);
   });
+}
+function paintTraitChips(box, selected, onPick) {
+  box.innerHTML = "";
+  TvSync.editorChips(selected).forEach(function (chip) {
+    const on = selected.indexOf(chip.id) !== -1;
+    const b = el("<button type=\"button\"" + (on ? " class=\"on\"" : "") + " aria-pressed=\"" + (on ? "true" : "false") + "\">" + esc(chip.label) + "</button>");
+    b.onclick = function (event) {
+      event.preventDefault();
+      onPick(chip.id);
+    };
+    box.appendChild(b);
+  });
+}
+function openEdit(show) {
+  const id = show && show.id;
+  const current = shows().find(function (x) { return x && String(x.id) === String(id); });
+  if (!current) return;
+  const dlg = document.getElementById("dlg");
+  const state = {
+    verdict: current.verdict || "",
+    touched: false,
+    chips: TvSync.chipList(current.chips)
+  };
+  document.getElementById("dlgTitle").textContent = current.title || "";
+  document.getElementById("dlgDate").value = current.watchedAt || today();
+  document.getElementById("dlgNote").value = current.note || "";
+  const verdicts = document.getElementById("verdicts");
+  const chipBox = document.getElementById("dlgChips");
+  function drawVerdicts() {
+    paintChoice(verdicts, TvSync.VERDICTS, state.verdict, function (id) {
+      state.verdict = id;
+      state.touched = true;
+      drawVerdicts();
+    });
+  }
+  function drawChips() {
+    paintTraitChips(chipBox, state.chips, function (id) {
+      state.chips = TvSync.toggleChip(state.chips, id);
+      drawChips();
+    });
+  }
+  drawVerdicts();
+  drawChips();
   dlg.showModal();
   dlg.onclose = function () {
     if (dlg.returnValue !== "ok") return;
-    const current = shows().find(function (x) { return x && String(x.id) === String(s.id); });
-    if (!current) return;
-    current.watchedAt = document.getElementById("dlgDate").value;
-    current.note = document.getElementById("dlgNote").value;
-    current.status = "watched";
-    changed(current, "watched");
+    const live = shows().find(function (x) { return x && String(x.id) === String(id); });
+    if (!live) return;
+    if (state.touched) {
+      live.verdict = state.verdict;
+      live.verdictSet = true;
+    }
+    const before = TvSync.chipList(live.chips).join("\u0000");
+    const after = TvSync.chipList(state.chips).join("\u0000");
+    if (before !== after) live.chips = TvSync.chipList(state.chips);
+    live.watchedAt = document.getElementById("dlgDate").value;
+    live.note = document.getElementById("dlgNote").value;
+    live.status = "watched";
+    if (live.dnfKind) live.dnfKind = "";
+    changed(live, live.seenBefore ? "already seen" : "watched");
   };
 }
 function openSettings() {
@@ -450,7 +533,7 @@ function start() {
     if (!button || !event.currentTarget.contains(button)) return;
     const card = button.closest("article[data-id]");
     if (!card) return;
-    act(card.dataset.id, button.dataset.act);
+    act(card.dataset.id, button.dataset.act, button.dataset.chip);
   });
   document.querySelectorAll("nav button").forEach(function (b) {
     b.onclick = function () { tab = b.dataset.tab; render(); };

@@ -39,6 +39,26 @@
   }
 
   var NOT_FOR_ME_STATUS = "dnf";
+  var VERDICTS = [
+    { id: "top", label: "Top tier" },
+    { id: "fantastic", label: "fantastic" },
+    { id: "great", label: "great" },
+    { id: "liked", label: "liked" },
+    { id: "ok", label: "ok" },
+    { id: "trash", label: "trash" },
+    { id: "dnf", label: "dnf" }
+  ];
+  var CHIPS = [
+    { id: "pacing+", label: "pacing+" },
+    { id: "pacing-", label: "pacing-" },
+    { id: "acting+", label: "acting+" },
+    { id: "story+", label: "story+" },
+    { id: "production+", label: "production+" },
+    { id: "writing+", label: "writing+" },
+    { id: "dark+", label: "dark+" },
+    { id: "humour+", label: "humour+" },
+    { id: "too-slow", label: "too-slow" }
+  ];
 
   function showStatus(show) {
     if (!show || typeof show !== "object") return "";
@@ -853,10 +873,25 @@
     };
   }
 
+  function textId(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
+  function isTt(value) {
+    return /^tt\d{7,}$/.test(textId(value));
+  }
+
+  function numericRating(value) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && /^\d+(\.\d+)?$/.test(value.trim())) return Number(value.trim());
+    return null;
+  }
+
   function imdbUrl(show) {
     var src = show && typeof show === "object" ? show : {};
-    var id = typeof src.imdb === "string" ? src.imdb.trim() : "";
-    if (/^tt\d{7,}$/.test(id)) return "https://www.imdb.com/title/" + id + "/";
+    var id = textId(src.imdb);
+    if (!isTt(id)) id = textId(src.imdbId);
+    if (isTt(id)) return "https://www.imdb.com/title/" + id + "/";
     var title = String(src.title || "").replace(/\s+/g, " ").trim();
     var yearMatch = String(src.years || "").match(/\d{4}/);
     var year = yearMatch ? yearMatch[0] : "";
@@ -880,15 +915,27 @@
 
   function imdbLabel(show) {
     var src = show && typeof show === "object" ? show : {};
-    if (typeof src.imdb === "number" && Number.isFinite(src.imdb)) return String(src.imdb);
-    if (typeof src.imdb === "string" && /^\d+(\.\d+)?$/.test(src.imdb)) return src.imdb;
+    if (!isTt(src.imdb)) {
+      var legacy = numericRating(src.imdb);
+      if (legacy != null) return typeof src.imdb === "number" ? String(src.imdb) : textId(src.imdb);
+    }
+    if (isTt(src.imdb) || isTt(src.imdbId)) {
+      var score = numericRating(src.score);
+      if (score != null) return typeof src.score === "number" ? String(src.score) : textId(src.score);
+    }
     return "IMDb";
   }
 
   function imdbScore(show) {
     if (!show || typeof show !== "object") return 0;
-    if (typeof show.imdb === "number" && Number.isFinite(show.imdb)) return show.imdb;
-    if (typeof show.imdb === "string" && /^\d+(\.\d+)?$/.test(show.imdb)) return Number(show.imdb);
+    if (!isTt(show.imdb)) {
+      var legacy = numericRating(show.imdb);
+      if (legacy != null) return legacy;
+    }
+    if (isTt(show.imdb) || isTt(show.imdbId)) {
+      var score = numericRating(show.score);
+      if (score != null) return score;
+    }
     return 0;
   }
 
@@ -900,7 +947,7 @@
       if (show.status !== "watched") return;
       var verdict = show.verdict;
       if (verdict === "trash" || verdict === "dnf" || verdict === "ok") return;
-      var bump = verdict === "fantastic" || verdict === "great" ? 2 : 1;
+      var bump = verdict === "top" || verdict === "fantastic" || verdict === "great" ? 2 : 1;
       score[show.lane] = (score[show.lane] || 0) + bump;
     });
     return score;
@@ -954,9 +1001,83 @@
     return rows;
   }
 
+  function verdictLabel(verdict) {
+    var text = typeof verdict === "string" ? verdict : "";
+    var i;
+    for (i = 0; i < VERDICTS.length; i++) {
+      if (VERDICTS[i].id === text) return VERDICTS[i].label;
+    }
+    return text;
+  }
+
+  function chipList(value) {
+    if (!Array.isArray(value)) return [];
+    var out = [];
+    value.forEach(function (item) {
+      if (typeof item !== "string") return;
+      var id = item.trim();
+      if (!id || out.indexOf(id) !== -1) return;
+      out.push(id);
+    });
+    return out;
+  }
+
+  function orderChips(list) {
+    var current = chipList(list);
+    var known = [];
+    CHIPS.forEach(function (chip) {
+      if (current.indexOf(chip.id) !== -1) known.push(chip.id);
+    });
+    var extra = current.filter(function (id) {
+      var i;
+      for (i = 0; i < CHIPS.length; i++) {
+        if (CHIPS[i].id === id) return false;
+      }
+      return true;
+    });
+    return known.concat(extra);
+  }
+
+  function chipLabel(id) {
+    var i;
+    for (i = 0; i < CHIPS.length; i++) {
+      if (CHIPS[i].id === id) return CHIPS[i].label;
+    }
+    return typeof id === "string" ? id : "";
+  }
+
+  function editorChips(selected) {
+    var have = chipList(selected);
+    var extra = [];
+    have.forEach(function (id) {
+      var i;
+      var known = false;
+      for (i = 0; i < CHIPS.length; i++) {
+        if (CHIPS[i].id === id) known = true;
+      }
+      if (!known) extra.push({ id: id, label: id });
+    });
+    return CHIPS.concat(extra);
+  }
+
+  function toggleChip(list, id) {
+    var current = chipList(list);
+    if (typeof id !== "string" || !id.trim()) return orderChips(current);
+    var chipId = id.trim();
+    if (current.indexOf(chipId) === -1) current.push(chipId);
+    else current = current.filter(function (item) { return item !== chipId; });
+    return orderChips(current);
+  }
+
+  function verdictChoice(show) {
+    if (!show || show.verdictSet === undefined || show.verdictSet === null || show.verdictSet === "") return null;
+    return show.verdictSet === true;
+  }
+
   function cardFields(show) {
     var src = show && typeof show === "object" ? show : {};
     var status = showStatus(src);
+    var verdict = textField(src.verdict);
     return {
       id: src.id == null ? "" : String(src.id),
       title: textField(src.title),
@@ -971,26 +1092,49 @@
       imdbHref: imdbUrl(src),
       imdbLabel: imdbLabel(src),
       watchedAt: textField(src.watchedAt),
-      verdict: textField(src.verdict)
+      verdict: verdict,
+      verdictLabel: verdictLabel(verdict),
+      verdictSet: verdictChoice(src),
+      chips: chipList(src.chips),
+      dnfKind: textField(src.dnfKind),
+      seenBefore: src.seenBefore === true
     };
+  }
+
+  function clearDnfKind(next) {
+    if (next && next.dnfKind) next.dnfKind = "";
+    return next;
+  }
+
+  function applyWatched(next, day, seenBefore) {
+    next.status = "watched";
+    if (!next.watchedAt) next.watchedAt = day || "";
+    if (!next.verdict) {
+      next.verdict = "liked";
+      next.verdictSet = false;
+    }
+    if (seenBefore) next.seenBefore = true;
+    return clearDnfKind(next);
   }
 
   function applyStatus(show, kind, day) {
     var next = Object.assign({}, show || {});
-    if (kind === "watched") {
-      next.status = "watched";
-      if (!next.watchedAt) next.watchedAt = day || "";
-      if (!next.verdict) next.verdict = "liked";
-      return next;
-    }
+    if (kind === "watched") return applyWatched(next, day, false);
+    if (kind === "seen") return applyWatched(next, day, true);
     if (kind === "dismiss") {
       next.status = dismissStatus();
+      next.dnfKind = "skip";
       if (next.status === "dnf" && !next.verdict) next.verdict = "dnf";
       return next;
     }
     if (kind === "near" || kind === "long" || kind === "dnf") {
       next.status = kind;
-      if (kind === "dnf" && !next.verdict) next.verdict = "dnf";
+      if (kind === "dnf") {
+        next.dnfKind = "no";
+        if (!next.verdict) next.verdict = "dnf";
+      } else {
+        clearDnfKind(next);
+      }
       return next;
     }
     return next;
@@ -1040,6 +1184,13 @@
     dismissStatus: dismissStatus,
     plannedCount: plannedCount,
     filterShows: filterShows,
-    cardFields: cardFields
+    cardFields: cardFields,
+    VERDICTS: VERDICTS,
+    CHIPS: CHIPS,
+    verdictLabel: verdictLabel,
+    chipList: chipList,
+    chipLabel: chipLabel,
+    editorChips: editorChips,
+    toggleChip: toggleChip
   };
 });
