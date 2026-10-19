@@ -45,6 +45,6 @@ Open the page at a narrow width, with the real list or a local copy.
 3. Tap Watched, tap Top tier, then `pacing+` and `acting+`, and Save. The card says Top tier. `verdict` is `top`, `verdictSet` is `true`, and `chips` lists `pacing+` before `acting+`.
 4. Tap a chip on that watched card. It toggles without the dialog.
 5. Not for me and Dismiss both leave Suggested and show under Not for me. The first badge is Not for me (`dnfKind: no`). The second is Dismiss (`dnfKind: skip`).
-6. Cancel on the verdict dialog leaves the default liked mark in place.
+6. Cancel on the verdict dialog leaves the default liked mark in place. Save, Cancel, the back button, and a tap on the dimmed area all close that sheet. A second Save while it is closing does not write again.
 
 `node tv-sync.test.js` checks the field rules without a browser.
