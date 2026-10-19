@@ -105,6 +105,16 @@
   #dlgChips { margin-top:8px; margin-bottom:4px; }
   #verdicts button.top { grid-column:1 / -1; }
   dialog { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:16px; width:min(520px, 92vw); max-height:88vh; overflow:auto; padding:16px 16px calc(16px + env(safe-area-inset-bottom)); }
+  #dlg { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+  #dlg form { display:flex; flex-direction:column; min-height:0; max-height:88vh; }
+  #dlg .dlg-body { overflow:auto; min-height:0; padding:16px 16px 8px; }
+  #dlg .dlg-actions { flex:0 0 auto; margin-top:0; padding:8px 16px calc(12px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
+  #dlg label { display:block; margin-top:10px; }
+  #dlg input[type="date"] {
+    width:100%; background:#12171e; color:var(--text); color-scheme:dark;
+    border:1px solid var(--line); border-radius:12px; padding:12px; font:inherit; margin-top:8px;
+    min-height:var(--btn-h);
+  }
   dialog::backdrop { background:rgba(0,0,0,.6); }
   .sheet label { display:block; margin-top:10px; }
   details { margin-top:16px; }
@@ -153,16 +163,18 @@
 <main id="list"></main>
 <dialog id="dlg">
   <form method="dialog">
-    <h3 id="dlgTitle" style="margin:0 0 8px"></h3>
-    <label class="note">Watched date</label>
-    <input type="date" id="dlgDate" />
-    <label class="note">Verdict</label>
-    <p class="note">Top tier means superior acting, story, pacing and production. Leaving the mark on liked records a default.</p>
-    <div class="row" id="verdicts"></div>
-    <label class="note">Traits</label>
-    <div class="chips" id="dlgChips"></div>
-    <textarea id="dlgNote" rows="3" placeholder="Optional note"></textarea>
-    <div class="row"><button value="cancel">Cancel</button><button class="go" value="ok">Save</button></div>
+    <div class="dlg-body">
+      <h3 id="dlgTitle" style="margin:0 0 8px"></h3>
+      <label class="note">Watched date</label>
+      <input type="date" id="dlgDate" />
+      <label class="note">Verdict</label>
+      <p class="note">Top tier means superior acting, story, pacing and production. Leaving the mark on liked records a default.</p>
+      <div class="row" id="verdicts"></div>
+      <label class="note">Traits</label>
+      <div class="chips" id="dlgChips"></div>
+      <textarea id="dlgNote" rows="3" placeholder="Optional note"></textarea>
+    </div>
+    <div class="row dlg-actions"><button value="cancel">Cancel</button><button class="go" value="ok">Save</button></div>
   </form>
 </dialog>
 <dialog id="settings">
